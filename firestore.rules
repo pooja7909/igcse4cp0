@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Assessments collection
+    match /assessments/{assessmentId} {
+      allow read, write: if true;
+
+      // Student sessions subcollection
+      match /students/{studentId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Direct student sessions collection for easy realtime queries
+    match /student_sessions/{sessionId} {
+      allow read, write: if true;
+    }
+
+    // Default match for other collections
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

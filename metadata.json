@@ -1,0 +1,7 @@
+{
+  "name": "Pearson Edexcel IGCSE Computer Science (4CP0) AutoGrader",
+  "description": "Auto-marking examination and practice platform aligned with the Pearson Edexcel International GCSE (9-1) Computer Science (4CP0) specification for Paper 1 (Principles) and Paper 2 (Application of Computational Thinking).",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

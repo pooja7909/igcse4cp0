@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "functions": {
+    "api/index.ts": {
+      "includeFiles": "data/**"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
