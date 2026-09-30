@@ -210,10 +210,11 @@ export const ExamSession: React.FC<ExamSessionProps> = ({
     let totalMarks = 0;
     let percentage = 0;
 
-    // Calculate marks authoritatively so teacher's live dashboard immediately receives full breakdown
+    // Calculate marks authoritatively using the master mark schemes & test definitions
     for (const task of questionsList) {
+      const masterTask = allTasks[task.id] || task;
       const studentAns = answers[task.id];
-      const markRes = await autoMarkTask(task, studentAns);
+      const markRes = await autoMarkTask(masterTask, studentAns);
       marksRecord[task.id] = markRes.m;
       detailedRecord[task.id] = markRes;
       totalMarks += markRes.m;
