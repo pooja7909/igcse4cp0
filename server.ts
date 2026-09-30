@@ -2631,14 +2631,35 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
   // 1. Multiple Choice (MCQ)
   if (task.type === "mcq") {
     const mcqs = task.questions || task.mcqs || [];
-    if (!mcqs.length) return { m: 0 };
-    let correct = 0;
-    const ansArray = Array.isArray(studentAns)
+    if (!mcqs.length) return { m: 0, feedback: "No MCQ questions configured." };
+
+    const rawAnswers = Array.isArray(studentAns)
       ? studentAns
-      : studentAns !== null && studentAns !== undefined
+      : studentAns !== null && studentAns !== undefined && studentAns !== ""
       ? [studentAns]
       : [];
 
+    const parseAnswerIndex = (val: any): number | null => {
+      if (val === null || val === undefined || val === "") return null;
+      if (typeof val === "number" && !isNaN(val)) return val;
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        if (trimmed === "") return null;
+        if (/^-?\d+$/.test(trimmed)) {
+          const num = Number(trimmed);
+          if (!isNaN(num)) return num;
+        }
+      }
+      return null;
+    };
+
+    const ansArray = rawAnswers.map(parseAnswerIndex);
+    const hasAnySelection = ansArray.some((a) => a !== null);
+    if (!hasAnySelection && (!studentAns || typeof studentAns !== "string" || !studentAns.trim())) {
+      return { m: 0, feedback: "No option selected (0 marks)." };
+    }
+
+    let correct = 0;
     const feedbackNotes: string[] = [];
 
     for (let i = 0; i < mcqs.length; i++) {
@@ -2646,38 +2667,25 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
       const given = ansArray[i];
       const options: string[] = q.options || q.o || [];
 
-      if (given !== undefined && given !== null && String(given).trim() !== "") {
+      if (given !== null && given !== undefined) {
         let isCorrect = false;
 
         if (typeof q.a === "number") {
-          const numGiven = Number(given);
-          if (!isNaN(numGiven) && numGiven === q.a) {
+          if (given === q.a) {
             isCorrect = true;
-          } else if (typeof given === "string") {
-            const cleanGiven = given.trim().toLowerCase();
-            // Match letter 'a', 'b', 'c', 'd'
+          } else if (typeof studentAns === "string") {
+            const cleanGiven = studentAns.trim().toLowerCase();
             if (cleanGiven.length === 1 && cleanGiven >= "a" && cleanGiven <= "z") {
-              const letterIndex = cleanGiven.charCodeAt(0) - 97;
-              if (letterIndex === q.a) isCorrect = true;
+              if (cleanGiven.charCodeAt(0) - 97 === q.a) isCorrect = true;
             }
-            // Match literal option text e.g. "if" matching options[q.a]
             if (!isCorrect && options[q.a] && options[q.a].trim().toLowerCase() === cleanGiven) {
               isCorrect = true;
             }
           }
         } else if (typeof q.a === "string") {
           const cleanExp = q.a.trim().toLowerCase();
-          const cleanGiven = String(given).trim().toLowerCase();
-          if (cleanGiven === cleanExp) {
+          if (options[given] && options[given].trim().toLowerCase() === cleanExp) {
             isCorrect = true;
-          } else {
-            const numGiven = Number(given);
-            if (!isNaN(numGiven) && options[numGiven] && options[numGiven].trim().toLowerCase() === cleanExp) {
-              isCorrect = true;
-            }
-            if (cleanExp.length === 1 && cleanExp >= "a" && cleanExp <= "z" && !isNaN(numGiven)) {
-              if (numGiven === cleanExp.charCodeAt(0) - 97) isCorrect = true;
-            }
           }
         }
 
@@ -2687,15 +2695,11 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
           const chosenText =
             typeof given === "number" && options[given]
               ? `"${options[given]}"`
-              : !isNaN(Number(given)) && options[Number(given)]
-              ? `"${options[Number(given)]}"`
-              : `"${given}"`;
+              : `Option ${given + 1}`;
           const correctText =
             typeof q.a === "number" && options[q.a]
               ? `"${options[q.a]}"`
-              : !isNaN(Number(q.a)) && options[Number(q.a)]
-              ? `"${options[Number(q.a)]}"`
-              : `"${q.a}"`;
+              : `Option ${q.a + 1}`;
           feedbackNotes.push(`Q${i + 1}: Selected ${chosenText}, expected ${correctText}`);
         }
       } else {
@@ -2720,8 +2724,13 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
       ansArray = studentAns;
     } else if (typeof studentAns === "object" && studentAns !== null) {
       ansArray = subQs.map((sq: any, idx: number) => studentAns[sq.id] ?? studentAns[idx] ?? "");
-    } else if (studentAns !== undefined && studentAns !== null) {
+    } else if (studentAns !== undefined && studentAns !== null && String(studentAns).trim() !== "") {
       ansArray = [studentAns];
+    }
+
+    const hasAnyResponse = ansArray.some((a) => a !== undefined && a !== null && String(a).trim() !== "");
+    if (!hasAnyResponse) {
+      return { m: 0, feedback: "No inspection answers entered (0 marks)." };
     }
 
     const feedbackNotes: string[] = [];
@@ -2754,6 +2763,13 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
   // 3. Sorting pass-by-pass
   if (task.type === "sort") {
     const studentRows = Array.isArray(studentAns) ? studentAns : [];
+    const hasValues = studentRows.some((row: any) =>
+      Array.isArray(row) && row.some((c: any) => c !== undefined && c !== null && String(c).trim() !== "")
+    );
+    if (!hasValues) {
+      return { m: 0, feedback: "No sort trace steps entered (0 marks)." };
+    }
+
     const expectedRows = (task.rows || []) as string[][];
     let earned = 0;
     let totalBoxes = 0;
@@ -2792,6 +2808,9 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
     let correctCount = 0;
     const givenGrid = Array.isArray(studentAns) ? studentAns : [];
 
+    // Check if candidate entered any non-given (fillable) values
+    let hasEnteredFillableValues = false;
+
     for (let r = 0; r < rawRows.length; r++) {
       const rawRow = rawRows[r];
       const cells = Array.isArray(rawRow) ? rawRow : Array.isArray(rawRow?.c) ? rawRow.c : [];
@@ -2801,21 +2820,19 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
           fillableCount++;
           const givenVal =
             givenGrid[r] && givenGrid[r][c] !== undefined ? String(givenGrid[r][c]).trim() : "";
-          if (givenVal && cellMatches(givenVal, cell.v)) {
-            correctCount++;
+          if (givenVal !== "") {
+            hasEnteredFillableValues = true;
+            if (cellMatches(givenVal, cell.v)) {
+              correctCount++;
+            }
           }
         }
       }
     }
 
     if (fillableCount === 0) return { m: 0, feedback: "Table has no fillable cells." };
-
-    // Check if candidate actually entered any values
-    const hasEnteredValues = givenGrid.some((row: any) =>
-      Array.isArray(row) && row.some((val: any) => val !== undefined && val !== null && String(val).trim() !== "")
-    );
-    if (!hasEnteredValues) {
-      return { m: 0, feedback: "No values entered in trace table." };
+    if (!hasEnteredFillableValues) {
+      return { m: 0, feedback: "No values entered in trace table (0 marks)." };
     }
 
     const awarded = Math.round((correctCount / fillableCount) * maxMarks);
@@ -2826,12 +2843,20 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
   }
 
   if (task.type === "code") {
-    const code = typeof studentAns === "string" ? studentAns : "";
-    if (!code.trim()) return { m: 0, feedback: "No code submitted." };
+    const code = typeof studentAns === "string" ? studentAns.trim() : "";
+    const starter = typeof task.starter === "string" ? task.starter.trim() : "";
+
+    const stripCommentsAndSpace = (s: string) => s.replace(/#.*$/gm, "").replace(/\s+/g, "").trim();
+    const strippedCode = stripCommentsAndSpace(code);
+    const strippedStarter = stripCommentsAndSpace(starter);
+
+    if (!code || !strippedCode || (strippedStarter && strippedCode === strippedStarter)) {
+      return { m: 0, feedback: !code ? "No code submitted (0 marks)." : "Starter code was not modified (0 marks)." };
+    }
 
     const tests = task.tests || [];
     if (!tests.length) {
-      return { m: maxMarks > 1 ? Math.floor(maxMarks / 2) : 1 };
+      return { m: 0, feedback: "No automated test cases configured." };
     }
 
     // Anti-Hardcoding Guard: detects static prints without inputs or hardcoded lookup tables
@@ -2868,27 +2893,44 @@ async function autoMarkTaskOnServer(task: any, studentAns: any): Promise<{ m: nu
   }
 
   if (task.type === "theory") {
-    const subQs = task.theorySubQuestions || [];
+    const subQs = task.theorySubQuestions || task.questions || [];
     if (subQs.length > 0) {
       let totalEarned = 0;
-      const ansMap = typeof studentAns === "object" && studentAns !== null ? studentAns : {};
-      for (const tsq of subQs) {
-        const given = String(ansMap[tsq.id] || "").toLowerCase();
+      let hasAnyGiven = false;
+      const ansMap = typeof studentAns === "object" && studentAns !== null && !Array.isArray(studentAns)
+        ? studentAns
+        : Array.isArray(studentAns)
+        ? studentAns.reduce((acc, v, i) => ({ ...acc, [subQs[i]?.id || i]: v }), {})
+        : { [subQs[0]?.id || "0"]: studentAns };
+
+      for (let idx = 0; idx < subQs.length; idx++) {
+        const tsq = subQs[idx];
+        const rawGiven = ansMap[tsq.id] ?? ansMap[idx] ?? (idx === 0 ? studentAns : "");
+        const given = String(rawGiven || "").trim().toLowerCase();
+        if (!given) continue;
+        hasAnyGiven = true;
         const keywords = (tsq.keywords || []).map((k: string) => k.toLowerCase());
+        if (!keywords.length) continue;
         let kwMatches = 0;
         for (const kw of keywords) {
           if (given.includes(kw)) kwMatches++;
         }
-        const subMax = tsq.marks || 1;
-        const subRatio = keywords.length ? Math.min(1, kwMatches / Math.max(1, Math.ceil(keywords.length / 2))) : 0.5;
+        if (kwMatches === 0) continue;
+        const subMax = tsq.marks || tsq.maxMarks || 1;
+        const subRatio = Math.min(1, kwMatches / Math.max(1, Math.ceil(keywords.length / 2)));
         totalEarned += Math.round(subRatio * subMax);
       }
+
+      if (!hasAnyGiven) {
+        return { m: 0, feedback: "No response submitted (0 marks)." };
+      }
+
       return { m: Math.min(maxMarks, totalEarned) };
     }
   }
 
-  // Fallback
-  return { m: studentAns ? 1 : 0 };
+  // Fallback: unanswered questions receive 0
+  return { m: 0, feedback: "No response submitted." };
 }
 
 // Assessment management endpoints (Public list for active assessments, full details for authenticated teachers)
@@ -3385,22 +3427,20 @@ app.post("/api/assessments/:id/join", (req, res) => {
   const cleanName = (name || "").trim().toLowerCase();
   
   // Look for existing session for this specific student in this assessment
-  // 1. By requested studentId ONLY IF it matches the student's name (never hijack another student's session)
-  // 2. Or by normalized student name match
+  // Only reconnect if the session is still active/in-progress (never hijack already-submitted exams)
   let existingSession: LiveStudentSession | undefined;
   if (requestedStudentId && a.students[requestedStudentId]) {
     const candidate = a.students[requestedStudentId];
     const candidateCleanName = (candidate.name || "").trim().toLowerCase();
-    // Only reuse session if the requested name matches the session owner
-    if (!cleanName || candidateCleanName === cleanName) {
+    if ((!cleanName || candidateCleanName === cleanName) && candidate.status !== "submitted") {
       existingSession = candidate;
     }
   }
 
-  // If not matched by ID + name, look for this specific student by clean name in this assessment
+  // Only match by clean name if candidate has not already submitted
   if (!existingSession && cleanName) {
     existingSession = Object.values(a.students).find(
-      (s) => (s.name || "").trim().toLowerCase() === cleanName
+      (s) => (s.name || "").trim().toLowerCase() === cleanName && s.status !== "submitted"
     );
   }
 
