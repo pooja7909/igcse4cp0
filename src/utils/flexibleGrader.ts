@@ -53,6 +53,16 @@ export function flexibleCompareOutputs(
   actual: string,
   expected: string
 ): { matches: boolean; reason: string } {
+  // If expected is empty or not provided (e.g. stripped for confidentiality), it must never match
+  if (expected === undefined || expected === null || String(expected).trim() === "") {
+    return { matches: false, reason: "no_expected_output_specified" };
+  }
+
+  // If actual program output is completely empty while expected is non-empty, it must not match
+  if (actual === undefined || actual === null || String(actual).trim() === "") {
+    return { matches: false, reason: "empty_program_output" };
+  }
+
   const actNorm = normalizeText(actual);
   const expNorm = normalizeText(expected);
 
