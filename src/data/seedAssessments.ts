@@ -2331,40 +2331,7 @@ export const SEED_ASSESSMENTS_MAP: Record<string, Assessment> = {
     "maxMarks": 21,
     "createdAt": 1790156201214,
     "status": "active",
-    "students": {
-      "s_a_utnb": {
-        "studentId": "s_a_utnb",
-        "name": "a",
-        "candidateNumber": "C8964",
-        "className": "11B",
-        "status": "submitted",
-        "currentQuestionIndex": 4,
-        "answeredQuestions": [
-          "p25_q01bii",
-          "p25_q01a"
-        ],
-        "answers": {
-          "p25_q01bii": "# Q01bii - Ball Counter\nballs = [\"green\"] * 25 + [\"red\"] * 15\n\ngreen_count = 0\nred_count = 0\n\n# Error 1: loop index off by one\nfor i in range(len(balls)):\n    if balls[i] == \"green\":\n        green_count += 1\n    # Error 2: incorrect string check\n    elif balls[i] == \"red\":\n        red_count += 1\n\n# Error 3: total calculation bug\n    total_balls = green_count - red_count\n\nprint(f\"Green: {green_count} balls\")\nprint(f\"Red:   {red_count} balls\")\nprint(f\"Total: {total_balls} balls\")\n",
-          "p25_q01a": [
-            1
-          ]
-        },
-        "marks": {
-          "u04a": 0,
-          "u05c": 0,
-          "u15a": 0,
-          "p25_q01bii": 2,
-          "p25_q01a": 1
-        },
-        "totalMarks": 3,
-        "maxMarks": 21,
-        "percentage": 14,
-        "joinedAt": 1790156244992,
-        "lastActiveAt": 1790156363042,
-        "submittedAt": 1790156363042,
-        "feedback": "Feedback & Focus Action: Q1(a) Selection keyword 'if' correctly identified (+1 mark). Q1(b)(ii) Ball Counter: Loop index and string case correctly amended (+2 marks). Focus on accumulation operators (+ vs -) and complete trace tables sequentially before submitting."
-      }
-    }
+    "students": {}
   }
 };
 
