@@ -33,6 +33,19 @@ function normalizeList(s: string): string {
 }
 
 /**
+ * Checks if code is empty, whitespace-only, or identical to starter code (ignoring comments/whitespace)
+ */
+function isEffectivelyEmptyOrUnmodified(code: string, starter: string): boolean {
+  if (!code || typeof code !== "string" || !code.trim()) return true;
+  const strip = (s: string) => s.replace(/#.*$/gm, "").replace(/\s+/g, "").trim();
+  const strippedCode = strip(code);
+  const strippedStarter = strip(starter || "");
+  if (!strippedCode) return true;
+  if (strippedStarter && strippedCode === strippedStarter) return true;
+  return false;
+}
+
+/**
  * Generates specific, diagnostic feedback based directly on the student's written code or answers.
  */
 function diagnoseCodeFeedback(
@@ -142,7 +155,20 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
 
   // 1. Python Code question
   if (task.type === "code") {
-    const code = typeof answer === "string" ? answer : "";
+    const code = typeof answer === "string" ? answer.trim() : "";
+    const starter = typeof task.starter === "string" ? task.starter.trim() : "";
+
+    // If candidate wrote nothing, or submitted effectively unmodified starter code
+    if (isEffectivelyEmptyOrUnmodified(code, starter)) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: !code ? `No code submitted (0/${maxMarks} marks).` : `Starter code was not modified (0/${maxMarks} marks).`,
+      };
+    }
+
     if (!task.tests || task.tests.length === 0) {
       return { m: 0, M: maxMarks, passed: false, detail: [] };
     }
@@ -201,22 +227,53 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
 
   // 2. Multiple Choice (MCQ)
   if (task.type === "mcq") {
-    const answersArr: (number | null)[] = Array.isArray(answer)
+    const rawAnswers = Array.isArray(answer)
       ? answer
-      : answer !== null && answer !== undefined
-      ? [typeof answer === "number" ? answer : !isNaN(Number(answer)) ? Number(answer) : null]
+      : answer !== null && answer !== undefined && answer !== ""
+      ? [answer]
       : [];
+
+    const parseAnswerIndex = (val: any): number | null => {
+      if (val === null || val === undefined || val === "") return null;
+      if (typeof val === "number" && !isNaN(val)) return val;
+      if (typeof val === "string") {
+        const trimmed = val.trim();
+        if (trimmed === "") return null;
+        if (/^-?\d+$/.test(trimmed)) {
+          const num = Number(trimmed);
+          if (!isNaN(num)) return num;
+        }
+      }
+      return null;
+    };
+
+    const answersArr: (number | null)[] = rawAnswers.map(parseAnswerIndex);
     const questions = ((task.questions || (task as any).mcqs || []) as MCQQuestion[]);
+    
+    // Strict guard: If no selection was made at all, award 0 marks
+    if (
+      answersArr.length === 0 ||
+      answersArr.every((ans) => ans === null)
+    ) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: `No option selected (0/${maxMarks} marks).`,
+      };
+    }
+
     let earned = 0;
     const feedbackItems: string[] = [];
 
     const detail = questions.map((q, idx) => {
-      let chosenIdx = answersArr[idx];
+      let chosenIdx = answersArr[idx] ?? null;
       const options: string[] = (q as any).options || (q as any).o || [];
-      let isCorrect = chosenIdx === q.a;
+      let isCorrect = chosenIdx !== null && chosenIdx === q.a;
 
       // Handle string answer matching option text
-      if (!isCorrect && typeof answer === "string") {
+      if (!isCorrect && typeof answer === "string" && answer.trim().length > 0) {
         const cleanAns = answer.trim().toLowerCase();
         if (options[q.a] && options[q.a].trim().toLowerCase() === cleanAns) {
           isCorrect = true;
@@ -270,6 +327,34 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
   if (task.type === "table") {
     const rows = (task.rows || []) as TableCell[][];
     const studentTable = Array.isArray(answer) ? answer : [];
+    
+    // Strict guard: Check if candidate entered any values into fillable cells
+    let enteredFillableValues = false;
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        const cell = row[c];
+        if (cell && !cell.g) {
+          const studentVal = (studentTable[r] || [])[c];
+          if (studentVal !== undefined && studentVal !== null && String(studentVal).trim() !== "") {
+            enteredFillableValues = true;
+            break;
+          }
+        }
+      }
+      if (enteredFillableValues) break;
+    }
+
+    if (!enteredFillableValues) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: `No values entered in trace table (0/${maxMarks} marks).`,
+      };
+    }
+
     let earned = 0;
     let totalMarkableCells = 0;
     const errorsList: string[] = [];
@@ -322,7 +407,24 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
 
   // 4. Code Inspection / Exact Short Answer
   if (task.type === "inspect") {
-    const studentAnswers = Array.isArray(answer) ? answer : [];
+    const studentAnswers = Array.isArray(answer)
+      ? answer
+      : answer !== null && answer !== undefined && String(answer).trim() !== ""
+      ? [answer]
+      : [];
+    
+    // Strict guard: If no answers were provided, award 0 marks
+    const hasValues = studentAnswers.some((a: any) => a !== undefined && a !== null && String(a).trim() !== "");
+    if (!hasValues) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: `No inspection answers entered (0/${maxMarks} marks).`,
+      };
+    }
+
     const questions = (task.questions || []) as InspectQuestion[];
     let earned = 0;
     const feedbackItems: string[] = [];
@@ -368,6 +470,21 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
   // 5. Sorting pass-by-pass
   if (task.type === "sort") {
     const studentRows = Array.isArray(answer) ? answer : [];
+    
+    // Strict guard: If no sort entries were made, award 0 marks
+    const hasValues = studentRows.some((row: any) =>
+      Array.isArray(row) && row.some((c: any) => c !== undefined && c !== null && String(c).trim() !== "")
+    );
+    if (!hasValues) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: `No sort trace steps entered (0/${maxMarks} marks).`,
+      };
+    }
+
     const expectedRows = (task.rows || []) as string[][];
     let earned = 0;
     let totalBoxes = 0;
@@ -417,8 +534,28 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
   // 6. Theory / Free response
   if (task.type === "theory") {
     const questions = (task.questions || []) as TheoryQuestion[];
-    const studentAnswers = Array.isArray(answer) ? answer : [String(answer || "")];
-    const rawStudentText = studentAnswers[0] || "";
+    let studentTexts: string[] = [];
+    if (Array.isArray(answer)) {
+      studentTexts = answer.map((a: any) => String(a ?? "").trim());
+    } else if (typeof answer === "object" && answer !== null) {
+      studentTexts = Object.values(answer).map((a: any) => String(a ?? "").trim());
+    } else {
+      studentTexts = [String(answer ?? "").trim()];
+    }
+
+    const hasAnyText = studentTexts.some((t) => t.length > 0);
+    // Strict guard: If candidate entered no response, award 0 marks immediately
+    if (!hasAnyText) {
+      return {
+        m: 0,
+        M: maxMarks,
+        passed: false,
+        detail: [],
+        feedback: `No response submitted (0/${maxMarks} marks).`,
+      };
+    }
+
+    const rawStudentText = studentTexts.filter(Boolean).join("\n");
     let earned = 0;
 
     // Check with server if available, or keyword heuristic
@@ -450,20 +587,23 @@ export async function autoMarkTask(task: IGCSETask, answer: any): Promise<MarkRe
     }
 
     // Heuristic keyword matching with student-based feedback
-    const keywords = questions[0]?.keywords || [];
+    const keywords = (questions[0]?.keywords || (task as any).keywords || []).map((k: string) => k.toLowerCase());
     const text = normalizeStringAnswer(rawStudentText);
     const matchedKws: string[] = [];
     const missingKws: string[] = [];
 
     for (const kw of keywords) {
-      if (text.includes(kw.toLowerCase())) {
+      if (text.includes(kw)) {
         matchedKws.push(kw);
       } else {
         missingKws.push(kw);
       }
     }
 
-    const ratio = keywords.length ? Math.min(1, matchedKws.length / Math.max(1, Math.ceil(keywords.length / 2))) : 0.5;
+    // Only award marks if keywords actually match! Never default to 0.5!
+    const ratio = keywords.length > 0 && matchedKws.length > 0
+      ? Math.min(1, matchedKws.length / Math.max(1, Math.ceil(keywords.length / 2)))
+      : 0;
     earned = Math.round(ratio * maxMarks);
 
     let feedback = "";
