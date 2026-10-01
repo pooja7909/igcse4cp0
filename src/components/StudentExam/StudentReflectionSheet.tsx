@@ -30,6 +30,7 @@ interface StudentReflectionSheetProps {
   } | null;
   allTasks?: Record<string, IGCSETask>;
   teacherFeedback?: string;
+  questionFeedback?: Record<string, string>;
   reflectionData?: ReflectionSheetData;
   isTeacherEditable?: boolean;
   onSaveTeacherReflection?: (data: ReflectionSheetData) => Promise<void> | void;
@@ -85,6 +86,7 @@ export const StudentReflectionSheet: React.FC<StudentReflectionSheetProps> = ({
   result,
   allTasks = {},
   teacherFeedback,
+  questionFeedback,
   reflectionData,
   isTeacherEditable = false,
   onSaveTeacherReflection,
@@ -450,6 +452,18 @@ export const StudentReflectionSheet: React.FC<StudentReflectionSheetProps> = ({
                         </p>
                       )}
                     </div>
+
+                    {/* Teacher Question Feedback Note if provided */}
+                    {questionFeedback && questionFeedback[q.id] && (
+                      <div className="mt-2 p-2.5 bg-purple-50 border border-purple-200 rounded-lg text-xs space-y-1">
+                        <span className="font-bold text-purple-900 flex items-center gap-1.5 uppercase tracking-wider text-[10px]">
+                          <Edit3 className="w-3.5 h-3.5 text-purple-700" /> Teacher Comment on this Question:
+                        </span>
+                        <p className="text-purple-950 font-medium whitespace-pre-wrap">
+                          {questionFeedback[q.id]}
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
               );
