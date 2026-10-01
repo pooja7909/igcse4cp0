@@ -4,6 +4,7 @@ import {
   doc,
   setDoc,
   getDoc,
+  deleteDoc,
   collection,
   query,
   where,
@@ -127,6 +128,22 @@ export async function syncStudentSessionToFirestore(
     await setDoc(studentDocRef, cleanSession, { merge: true });
   } catch (err) {
     console.warn("Failed to sync student session to Firestore:", err);
+  }
+}
+
+/**
+ * Remove a student session / attempt from Firestore
+ */
+export async function deleteStudentSessionFromFirestore(
+  assessmentId: string,
+  studentId: string
+): Promise<void> {
+  if (!assessmentId || !studentId) return;
+  try {
+    const studentDocRef = doc(db, "assessments", assessmentId, "students", studentId);
+    await deleteDoc(studentDocRef);
+  } catch (err) {
+    console.warn("Failed to delete student session from Firestore:", err);
   }
 }
 
