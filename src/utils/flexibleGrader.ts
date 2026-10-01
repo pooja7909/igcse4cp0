@@ -25,12 +25,17 @@ export function stripPrompts(s: string): string {
   const norm = normalizeText(s);
   const lines = norm.split("\n");
   const cleanedLines = lines.map((line) => {
-    // Matches "Prompt string: <answer>" or "Prompt string? <answer>" or "Label = <answer>"
-    const promptMatch = line.match(/^([A-Za-z0-9 _\-\(\)\$#@]+[:?=]\s*)(.+)$/);
-    if (promptMatch && promptMatch[2]) {
-      return promptMatch[2].trim();
+    let cur = line.trim();
+    let changed = true;
+    while (changed) {
+      const promptMatch = cur.match(/^([A-Za-z0-9 _\-\(\)\$#@]+[:?=]\s*)(.+)$/);
+      if (promptMatch && promptMatch[2]) {
+        cur = promptMatch[2].trim();
+      } else {
+        changed = false;
+      }
     }
-    return line;
+    return cur;
   });
   return cleanedLines.join("\n").trim();
 }
@@ -42,6 +47,30 @@ export function extractNumbers(s: string): number[] {
   const matches = (s || "").match(/-?\d+(?:\.\d+)?/g);
   if (!matches) return [];
   return matches.map(Number).filter((n) => !isNaN(n));
+}
+
+function hasContradiction(actualLower: string, expectedLower: string): boolean {
+  // Check pass vs fail
+  const expPass = /\bpass\b/.test(expectedLower);
+  const expFail = /\bfail\b/.test(expectedLower);
+  const actPass = /\bpass\b/.test(actualLower);
+  const actFail = /\bfail\b/.test(actualLower);
+  if (expPass && !expFail && actFail) return true;
+  if (expFail && !expPass && actPass) return true;
+
+  // Check found vs not found
+  const expNotFound = expectedLower.includes("not found");
+  const expFound = expectedLower.includes("found") && !expNotFound;
+  const actNotFound = actualLower.includes("not found");
+  const actFound = actualLower.includes("found") && !actNotFound;
+  if (expNotFound && actFound && !actNotFound) return true;
+  if (expFound && actNotFound) return true;
+
+  // Check yes vs no / true vs false
+  if (/\byes\b/.test(expectedLower) && /\bno\b/.test(actualLower) && !/\byes\b/.test(actualLower)) return true;
+  if (/\bno\b/.test(expectedLower) && /\byes\b/.test(actualLower) && !/\bno\b/.test(actualLower)) return true;
+
+  return false;
 }
 
 /**
@@ -65,6 +94,13 @@ export function flexibleCompareOutputs(
 
   const actNorm = normalizeText(actual);
   const expNorm = normalizeText(expected);
+  const actLower = actNorm.toLowerCase();
+  const expLower = expNorm.toLowerCase();
+
+  // If candidate printed contradictory output (e.g. "Fail" when "Pass" was expected), reject
+  if (hasContradiction(actLower, expLower)) {
+    return { matches: false, reason: "contradictory_output_mismatch" };
+  }
 
   // 1. Exact normalized match
   if (actNorm === expNorm) {
@@ -79,7 +115,7 @@ export function flexibleCompareOutputs(
   }
 
   // 3. Case-insensitive match (e.g. "pass" vs "Pass", "yes" vs "Yes", "valid" vs "Valid")
-  if (actNorm.toLowerCase() === expNorm.toLowerCase()) {
+  if (actLower === expLower) {
     return { matches: true, reason: "case_insensitive_match" };
   }
   if (actStripped.toLowerCase() === expStripped.toLowerCase()) {
@@ -163,15 +199,22 @@ export function flexibleCompareOutputs(
   }
 
   // 7. Token set match: If expected has specific key answer tokens (e.g. ['Paris', 'France', '250'])
-  const expTokens = expNorm.toLowerCase().split(/[\s,;:|]+/).filter(Boolean);
-  const actTokens = actNorm.toLowerCase().split(/[\s,;:|]+/).filter(Boolean);
+  const expTokens = expLower.split(/[\s,;:|]+/).filter(Boolean);
+  const actTokens = actLower.split(/[\s,;:|]+/).filter(Boolean);
   if (expTokens.length > 0 && expTokens.length <= 4 && actTokens.length >= expTokens.length) {
     let matchedCount = 0;
     for (const t of expTokens) {
       if (actTokens.includes(t)) matchedCount++;
     }
     if (matchedCount === expTokens.length) {
-      return { matches: true, reason: "token_inclusion_match" };
+      if (expTokens.length === 1 && actTokens.length > 3) {
+        const lastActToken = actTokens[actTokens.length - 1];
+        if (lastActToken === expTokens[0] || actStripped.toLowerCase() === expTokens[0]) {
+          return { matches: true, reason: "token_inclusion_match" };
+        }
+      } else {
+        return { matches: true, reason: "token_inclusion_match" };
+      }
     }
   }
 
