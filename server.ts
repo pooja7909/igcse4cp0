@@ -47,6 +47,7 @@ interface LiveStudentSession {
   lastActiveAt: number;
   submittedAt?: number;
   feedback?: string;
+  questionFeedback?: Record<string, string>;
   reflectionSheet?: any;
   aiDiagnostic?: {
     overallSummary: string;
@@ -578,11 +579,17 @@ function stripPrompts(s: string): string {
   const norm = normalizeOutput(s);
   const lines = norm.split("\n");
   const cleaned = lines.map((line) => {
-    const promptMatch = line.match(/^([A-Za-z0-9 _\-\(\)\$#@]+[:?=]\s*)(.+)$/);
-    if (promptMatch && promptMatch[2]) {
-      return promptMatch[2].trim();
+    let cur = line.trim();
+    let changed = true;
+    while (changed) {
+      const promptMatch = cur.match(/^([A-Za-z0-9 _\-\(\)\$#@]+[:?=]\s*)(.+)$/);
+      if (promptMatch && promptMatch[2]) {
+        cur = promptMatch[2].trim();
+      } else {
+        changed = false;
+      }
     }
-    return line;
+    return cur;
   });
   return cleaned.join("\n").trim();
 }
@@ -593,12 +600,50 @@ function extractNumbers(s: string): number[] {
   return matches.map(Number).filter((n) => !isNaN(n));
 }
 
+function hasContradiction(actualLower: string, expectedLower: string): boolean {
+  // Check pass vs fail
+  const expPass = /\bpass\b/.test(expectedLower);
+  const expFail = /\bfail\b/.test(expectedLower);
+  const actPass = /\bpass\b/.test(actualLower);
+  const actFail = /\bfail\b/.test(actualLower);
+  if (expPass && !expFail && actFail) return true;
+  if (expFail && !expPass && actPass) return true;
+
+  // Check found vs not found
+  const expNotFound = expectedLower.includes("not found");
+  const expFound = expectedLower.includes("found") && !expNotFound;
+  const actNotFound = actualLower.includes("not found");
+  const actFound = actualLower.includes("found") && !actNotFound;
+  if (expNotFound && actFound && !actNotFound) return true;
+  if (expFound && actNotFound) return true;
+
+  // Check yes vs no / true vs false
+  if (/\byes\b/.test(expectedLower) && /\bno\b/.test(actualLower) && !/\byes\b/.test(actualLower)) return true;
+  if (/\bno\b/.test(expectedLower) && /\byes\b/.test(actualLower) && !/\bno\b/.test(actualLower)) return true;
+
+  return false;
+}
+
 function flexibleCompareOutputs(
   actual: string,
   expected: string
 ): { matches: boolean; reason: string } {
+  if (expected === undefined || expected === null || String(expected).trim() === "") {
+    return { matches: false, reason: "no_expected_output_specified" };
+  }
+  if (actual === undefined || actual === null || String(actual).trim() === "") {
+    return { matches: false, reason: "empty_program_output" };
+  }
+
   const actNorm = normalizeOutput(actual);
   const expNorm = normalizeOutput(expected);
+  const actLower = actNorm.toLowerCase();
+  const expLower = expNorm.toLowerCase();
+
+  // If candidate printed contradictory output (e.g. "Fail" when "Pass" was expected), reject
+  if (hasContradiction(actLower, expLower)) {
+    return { matches: false, reason: "contradictory_output_mismatch" };
+  }
 
   // 1. Exact normalized match
   if (actNorm === expNorm) {
@@ -613,7 +658,7 @@ function flexibleCompareOutputs(
   }
 
   // 3. Case-insensitive match (e.g. "pass" vs "Pass", "yes" vs "Yes")
-  if (actNorm.toLowerCase() === expNorm.toLowerCase()) {
+  if (actLower === expLower) {
     return { matches: true, reason: "case_insensitive_match" };
   }
   if (actStripped.toLowerCase() === expStripped.toLowerCase()) {
@@ -697,15 +742,23 @@ function flexibleCompareOutputs(
   }
 
   // 7. Token inclusion match
-  const expTokens = expNorm.toLowerCase().split(/[\s,;:|]+/).filter(Boolean);
-  const actTokens = actNorm.toLowerCase().split(/[\s,;:|]+/).filter(Boolean);
+  const expTokens = expLower.split(/[\s,;:|]+/).filter(Boolean);
+  const actTokens = actLower.split(/[\s,;:|]+/).filter(Boolean);
   if (expTokens.length > 0 && expTokens.length <= 4 && actTokens.length >= expTokens.length) {
     let matchedCount = 0;
     for (const t of expTokens) {
       if (actTokens.includes(t)) matchedCount++;
     }
     if (matchedCount === expTokens.length) {
-      return { matches: true, reason: "token_inclusion_match" };
+      // If single token, ensure actual output is not a large arbitrary blob
+      if (expTokens.length === 1 && actTokens.length > 3) {
+        const lastActToken = actTokens[actTokens.length - 1];
+        if (lastActToken === expTokens[0] || actStripped.toLowerCase() === expTokens[0]) {
+          return { matches: true, reason: "token_inclusion_match" };
+        }
+      } else {
+        return { matches: true, reason: "token_inclusion_match" };
+      }
     }
   }
 
@@ -3631,25 +3684,108 @@ app.get("/api/assessments/:id/live", requireTeacher, (req, res) => {
 
 // Teacher manual override / feedback (Protected with requireTeacher)
 app.post("/api/assessments/:id/override-mark", requireTeacher, (req, res) => {
-  const { studentId, questionId, mark, feedback } = req.body;
-  const a = assessmentsDb[req.params.id];
-  if (!a || !a.students[studentId]) {
-    res.status(404).json({ error: "Session not found" });
+  const { studentId, questionId, mark, totalMarks, feedback, questionFeedback, studentSession } = req.body;
+  if (!studentId) {
+    res.status(400).json({ error: "studentId is required" });
+    return;
+  }
+  let a = assessmentsDb[req.params.id];
+  if (!a) {
+    a = Object.values(assessmentsDb).find((x) => x.code === req.params.id.toUpperCase() || x.id === req.params.id) as AssessmentStore;
+  }
+  if (!a) {
+    res.status(404).json({ error: "Assessment not found" });
     return;
   }
 
-  const s = a.students[studentId];
-  if (questionId && mark !== undefined) {
-    s.marks[questionId] = Number(mark);
-    s.totalMarks = Object.values(s.marks).reduce((acc, m) => acc + (m || 0), 0);
-    s.percentage = a.maxMarks > 0 ? Math.round((s.totalMarks / a.maxMarks) * 100) : 0;
-  }
-  if (feedback !== undefined) {
-    s.feedback = feedback;
+  if (!a.students) a.students = {};
+  if (!a.students[studentId]) {
+    if (studentSession && typeof studentSession === "object") {
+      a.students[studentId] = { ...studentSession, studentId };
+    } else {
+      a.students[studentId] = {
+        studentId,
+        name: "Candidate",
+        candidateNumber: "",
+        className: "",
+        status: "submitted",
+        currentQuestionIndex: 0,
+        answeredQuestions: [],
+        answers: {},
+        marks: {},
+        totalMarks: 0,
+        maxMarks: a.maxMarks || 20,
+        percentage: 0,
+        joinedAt: Date.now(),
+        lastActiveAt: Date.now(),
+      };
+    }
   }
 
+  const s = a.students[studentId];
+
+  // Merge full studentSession if provided
+  if (studentSession && typeof studentSession === "object") {
+    if (studentSession.marks) s.marks = { ...(s.marks || {}), ...studentSession.marks };
+    if (studentSession.questionFeedback !== undefined) s.questionFeedback = { ...studentSession.questionFeedback };
+    if (studentSession.feedback !== undefined) s.feedback = studentSession.feedback;
+    if (studentSession.totalMarks !== undefined) s.totalMarks = Number(studentSession.totalMarks) || 0;
+    if (studentSession.percentage !== undefined) s.percentage = Number(studentSession.percentage) || 0;
+  }
+
+  if (!s.marks) s.marks = {};
+
+  // Per-question mark override
+  if (questionId) {
+    if (mark !== undefined) {
+      s.marks[questionId] = Math.max(0, Number(mark) || 0);
+      s.totalMarks = Object.values(s.marks).reduce((acc, m) => acc + (Number(m) || 0), 0);
+      const effectiveMax = a.maxMarks || s.maxMarks || 1;
+      s.percentage = effectiveMax > 0 ? Math.round((s.totalMarks / effectiveMax) * 100) : 0;
+    }
+    if (questionFeedback !== undefined) {
+      if (!s.questionFeedback) s.questionFeedback = {};
+      if (typeof questionFeedback === "string" && questionFeedback.trim().length > 0) {
+        s.questionFeedback[questionId] = questionFeedback.trim();
+      } else {
+        delete s.questionFeedback[questionId];
+      }
+    }
+  }
+
+  // Explicit totalMarks override (if teacher directly adjusts overall score)
+  if (totalMarks !== undefined) {
+    s.totalMarks = Math.max(0, Number(totalMarks) || 0);
+    const effectiveMax = a.maxMarks || s.maxMarks || 1;
+    s.percentage = effectiveMax > 0 ? Math.round((s.totalMarks / effectiveMax) * 100) : 0;
+  }
+
+  // Overall candidate feedback
+  if (feedback !== undefined) {
+    s.feedback = typeof feedback === "string" ? feedback.trim() : feedback;
+  }
+
+  s.lastActiveAt = Date.now();
   savePersistedAssessments();
   res.json({ success: true, studentSession: s });
+});
+
+// Teacher deletes a candidate attempt / session (Protected with requireTeacher)
+app.delete("/api/assessments/:id/students/:studentId", requireTeacher, (req, res) => {
+  let a = assessmentsDb[req.params.id];
+  if (!a) {
+    a = Object.values(assessmentsDb).find((x) => x.code === req.params.id.toUpperCase() || x.id === req.params.id) as AssessmentStore;
+  }
+  if (!a) {
+    res.status(404).json({ error: "Assessment not found" });
+    return;
+  }
+  const { studentId } = req.params;
+  if (a.students && a.students[studentId]) {
+    delete a.students[studentId];
+    savePersistedAssessments();
+  }
+  res.json({ success: true, message: `Candidate session ${studentId} removed.` });
 });
 
 // Teacher updates reflection sheet fields directly (Protected with requireTeacher)
@@ -3677,12 +3813,21 @@ app.post("/api/assessments/:id/update-reflection-sheet", requireTeacher, (req, r
 
 // Re-evaluate a student against latest question mark schemes & tests (Protected with requireTeacher)
 app.post("/api/assessments/:id/regrade-student", requireTeacher, async (req, res) => {
-  const { studentId } = req.body;
+  const { studentId, studentSession } = req.body;
   let a = assessmentsDb[req.params.id];
   if (!a) {
     a = Object.values(assessmentsDb).find((x) => x.code === req.params.id.toUpperCase()) as AssessmentStore;
   }
-  if (!a || !a.students[studentId]) {
+  if (!a) {
+    res.status(404).json({ error: "Assessment not found" });
+    return;
+  }
+
+  if (!a.students) a.students = {};
+  if (!a.students[studentId] && studentSession) {
+    a.students[studentId] = studentSession;
+  }
+  if (!a.students[studentId]) {
     res.status(404).json({ error: "Student session not found" });
     return;
   }
