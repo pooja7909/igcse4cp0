@@ -231,6 +231,7 @@ export interface StudentSession {
   resultsReleased?: boolean;
   releaseSettings?: ResultReleaseSettings;
   feedback?: string;
+  questionFeedback?: Record<string, string>;
   reflectionSheet?: ReflectionSheetData;
   aiDiagnostic?: {
     overallSummary: string;
